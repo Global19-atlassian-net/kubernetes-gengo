@@ -230,6 +230,7 @@ type genDeepCopy struct {
 	allTypes      bool
 	registerTypes bool
 	imports       namer.ImportTracker
+	universe      types.Universe
 	typesForInit  []*types.Type
 }
 
@@ -328,7 +329,7 @@ func copyableType(t *types.Type) bool {
 		return false
 	}
 	// TODO: Consider generating functions for other kinds too.
-	if t.Kind != types.Struct {
+	if t.Kind != types.Struct && t.Kind != types.Alias {
 		return false
 	}
 	// Also, filter out private types.
@@ -369,6 +370,7 @@ func argsFromType(ts ...*types.Type) generator.Args {
 }
 
 func (g *genDeepCopy) Init(c *generator.Context, w io.Writer) error {
+	g.universe = c.Universe
 	return nil
 }
 
@@ -666,6 +668,8 @@ func (g *genDeepCopy) doSlice(t *types.Type, sw *generator.SnippetWriter) {
 			sw.Do("}\n", nil)
 		} else if t.Elem.Kind == types.Struct {
 			sw.Do("(*in)[i].DeepCopyInto(&(*out)[i])\n", nil)
+		} else if t.Elem.Kind == types.Alias {
+			sw.Do("(*in)[i].DeepCopyInto(&(*out)[i])\n", nil)
 		} else {
 			sw.Do("(*out)[i] = (*in)[i].DeepCopy()\n", nil)
 		}
@@ -762,8 +766,18 @@ func (g *genDeepCopy) doPointer(t *types.Type, sw *generator.SnippetWriter) {
 }
 
 func (g *genDeepCopy) doAlias(t *types.Type, sw *generator.SnippetWriter) {
-	// TODO: Add support for aliases.
-	g.doUnknown(t, sw)
+	unsafePointer := g.universe.Type(types.Name{Package: "unsafe", Name: "Pointer"})
+	g.imports.AddType(unsafePointer)
+
+	args := generator.Args{
+		"type":          t,
+		"unsafePointer": unsafePointer,
+	}
+
+	// memory layout of aliases is the same as the underlying type. Hence, unsafe.Pointer helps.
+	sw.Do("{ in := (*$.type.Underlying|raw$)($.unsafePointer$(in)); out := (*$.type.Underlying|raw$)($.unsafePointer$(out))\n", args)
+	g.generateFor(t.Underlying, sw)
+	sw.Do("}\n", nil)
 }
 
 func (g *genDeepCopy) doUnknown(t *types.Type, sw *generator.SnippetWriter) {
